@@ -103,8 +103,10 @@ class ConnectionUrl(BaseConnectionInfo):
 
 class BigQueryConnectionInfo(BaseConnectionInfo):
     project_id: SecretStr = Field(description="GCP project id", examples=["my-project"])
-    dataset_id: SecretStr = Field(
-        description="BigQuery dataset id", examples=["my_dataset"]
+    dataset_id: SecretStr | None = Field(
+        default=None,
+        description="BigQuery dataset id", 
+        examples=["my_dataset"]
     )
     credentials: SecretStr = Field(
         description="Base64 encode `credentials.json`", examples=["eyJ..."]

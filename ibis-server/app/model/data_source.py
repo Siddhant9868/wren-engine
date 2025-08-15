@@ -257,11 +257,15 @@ class DataSourceExtension(Enum):
                 "https://www.googleapis.com/auth/cloud-platform",
             ]
         )
-        return ibis.bigquery.connect(
-            project_id=info.project_id.get_secret_value(),
-            dataset_id=info.dataset_id.get_secret_value(),
-            credentials=credentials,
-        )
+        # Only include dataset_id if it's provided (for multi-dataset support)
+        connect_kwargs = {
+            "project_id": info.project_id.get_secret_value(),
+            "credentials": credentials,
+        }
+        if info.dataset_id is not None:
+            connect_kwargs["dataset_id"] = info.dataset_id.get_secret_value()
+        
+        return ibis.bigquery.connect(**connect_kwargs)
 
     @staticmethod
     def get_canner_connection(info: CannerConnectionInfo) -> BaseBackend:

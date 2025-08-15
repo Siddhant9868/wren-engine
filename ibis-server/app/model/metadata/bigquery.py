@@ -17,6 +17,8 @@ class BigQueryMetadata(Metadata):
         self.connection = DataSource.bigquery.get_connection(connection_info)
 
     def get_table_list(self) -> list[Table]:
+        if self.connection_info.dataset_id is None:
+            raise ValueError("dataset_id is required for get_table_list operation")
         dataset_id = self.connection_info.dataset_id.get_secret_value()
 
         # filter out columns with GEOGRAPHY & RANGE types
@@ -141,6 +143,8 @@ class BigQueryMetadata(Metadata):
         return list(unique_tables.values())
 
     def get_constraints(self) -> list[Constraint]:
+        if self.connection_info.dataset_id is None:
+            raise ValueError("dataset_id is required for get_constraints operation")
         dataset_id = self.connection_info.dataset_id.get_secret_value()
         sql = f"""
             SELECT 
