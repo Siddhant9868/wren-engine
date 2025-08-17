@@ -2990,6 +2990,72 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_date_trunc_roundtrip_bigquery_date_column() -> Result<()> {
+        let ctx = SessionContext::new();
+        let manifest = ManifestBuilder::new()
+            .catalog("wren")
+            .schema("test")
+            .model(
+                ModelBuilder::new("orders")
+                    .table_reference("orders")
+                    .column(ColumnBuilder::new("o_orderdate", "date").build())
+                    .build(),
+            )
+            .data_source(DataSource::BigQuery)
+            .build();
+        let analyzed_mdl = Arc::new(AnalyzedWrenMDL::analyze(
+            manifest,
+            Arc::new(HashMap::default()),
+            Mode::Unparse,
+        )?);
+        let headers = Arc::new(HashMap::default());
+
+        let sql = "SELECT date_trunc('month', o_orderdate) FROM orders";
+        assert_snapshot!(
+            transform_sql_with_ctx(&ctx, Arc::clone(&analyzed_mdl), &[], Arc::clone(&headers), sql).await?,
+            @"SELECT TIMESTAMP_TRUNC(CAST(orders.o_orderdate AS TIMESTAMP), MONTH) FROM (SELECT orders.o_orderdate FROM (SELECT __source.o_orderdate AS o_orderdate FROM orders AS __source) AS orders) AS orders"
+        );
+
+        let sql = "SELECT date_trunc('week(monday)', o_orderdate) FROM orders";
+        assert_snapshot!(
+            transform_sql_with_ctx(&ctx, Arc::clone(&analyzed_mdl), &[], Arc::clone(&headers), sql).await?,
+            @"SELECT TIMESTAMP_TRUNC(CAST(orders.o_orderdate AS TIMESTAMP), WEEK(MONDAY)) FROM (SELECT orders.o_orderdate FROM (SELECT __source.o_orderdate AS o_orderdate FROM orders AS __source) AS orders) AS orders"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_date_trunc_roundtrip_bigquery_timestamp_column() -> Result<()> {
+        let ctx = SessionContext::new();
+        let manifest = ManifestBuilder::new()
+            .catalog("wren")
+            .schema("test")
+            .model(
+                ModelBuilder::new("events")
+                    .table_reference("events")
+                    .column(ColumnBuilder::new("ts", "timestamp").build())
+                    .build(),
+            )
+            .data_source(DataSource::BigQuery)
+            .build();
+        let analyzed_mdl = Arc::new(AnalyzedWrenMDL::analyze(
+            manifest,
+            Arc::new(HashMap::default()),
+            Mode::Unparse,
+        )?);
+        let headers = Arc::new(HashMap::default());
+
+        let sql = "SELECT date_trunc('month', ts) FROM events";
+        assert_snapshot!(
+            transform_sql_with_ctx(&ctx, Arc::clone(&analyzed_mdl), &[], Arc::clone(&headers), sql).await?,
+            @"SELECT TIMESTAMP_TRUNC(events.ts, MONTH) FROM (SELECT events.ts FROM (SELECT __source.ts AS ts FROM events AS __source) AS events) AS events"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_window_functions_without_frame_bigquery() -> Result<()> {
         let ctx = SessionContext::new();
         let manifest = ManifestBuilder::new()

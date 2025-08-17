@@ -147,6 +147,62 @@ impl InnerDialect for BigQueryDialect {
                     expr: Box::new(unparser.expr_to_sql(&args[1])?),
                 }))
             }
+            // Add BigQuery-specific rewrite for date_trunc('unit', expr)
+            "date_trunc" => {
+                if args.len() != 2 {
+                    return plan_err!(
+                        "date_trunc requires exactly 2 arguments, found {}",
+                        args.len()
+                    );
+                }
+                // Normalize and validate the unit
+                let field = self.datetime_field_from_expr(&args[0])?;
+                let part_expr = self.datetime_field_to_expr(&field)?;
+
+                // Unparse the value expression (second arg)
+                let value_expr = unparser.expr_to_sql(&args[1])?;
+
+                // Decide target function name. Default to TIMESTAMP_TRUNC.
+                // We only select DATE_TRUNC when the expression is explicitly cast to DATE.
+                let func_name = if self.is_cast_to_date(&args[1]) {
+                    "DATE_TRUNC"
+                } else {
+                    "TIMESTAMP_TRUNC"
+                };
+
+                // Ensure correct input type for TIMESTAMP_TRUNC: cast to TIMESTAMP if not obviously timestamp.
+                let value_expr_for_fn = if func_name == "TIMESTAMP_TRUNC" && !self.is_timestampish(&args[1]) {
+                    ast::Expr::Cast {
+                        kind: ast::CastKind::Cast,
+                        expr: Box::new(value_expr),
+                        data_type: ast::DataType::Timestamp(None, ast::TimezoneInfo::None),
+                        format: None,
+                    }
+                } else {
+                    value_expr
+                };
+
+                let func = ast::Expr::Function(ast::Function {
+                    name: ast::ObjectName(vec![Ident::new(func_name)]),
+                    args: ast::FunctionArguments::List(ast::FunctionArgumentList {
+                        duplicate_treatment: None,
+                        args: vec![
+                            ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(
+                                value_expr_for_fn,
+                            )),
+                            ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(part_expr)),
+                        ],
+                        clauses: vec![],
+                    }),
+                    filter: None,
+                    null_treatment: None,
+                    over: None,
+                    within_group: vec![],
+                    parameters: ast::FunctionArguments::None,
+                    uses_odbc_syntax: false,
+                });
+                Ok(Some(func))
+            }
             _ => Ok(None),
         }
     }
@@ -227,6 +283,77 @@ impl BigQueryDialect {
             _ => {
                 plan_err!("Unsupported date part '{}' for BigQuery", s)
             }
+        }
+    }
+
+    // Convert a DateTimeField into an expression suitable as the second argument
+    // of *TRUNC functions, e.g., MONTH -> MONTH, WEEK(MONDAY) -> WEEK(MONDAY)
+    fn datetime_field_to_expr(&self, field: &ast::DateTimeField) -> Result<ast::Expr> {
+        use ast::DateTimeField as F;
+        Ok(match field {
+            F::Month => ast::Expr::Identifier(Ident::new("MONTH")),
+            F::Quarter => ast::Expr::Identifier(Ident::new("QUARTER")),
+            F::Year => ast::Expr::Identifier(Ident::new("YEAR")),
+            F::Isoyear => ast::Expr::Identifier(Ident::new("ISOYEAR")),
+            F::Day => ast::Expr::Identifier(Ident::new("DAY")),
+            F::IsoWeek => ast::Expr::Identifier(Ident::new("ISOWEEK")),
+            F::Week(None) => ast::Expr::Identifier(Ident::new("WEEK")),
+            F::Week(Some(weekday)) => ast::Expr::Function(ast::Function {
+                name: ast::ObjectName(vec![Ident::new("WEEK")]),
+                args: ast::FunctionArguments::List(ast::FunctionArgumentList {
+                    duplicate_treatment: None,
+                    args: vec![ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(
+                        ast::Expr::Identifier(Ident::new(weekday.value.clone())),
+                    ))],
+                    clauses: vec![],
+                }),
+                filter: None,
+                null_treatment: None,
+                over: None,
+                within_group: vec![],
+                parameters: ast::FunctionArguments::None,
+                uses_odbc_syntax: false,
+            }),
+            // Explicitly reject unsupported parts for TRUNC
+            F::DayOfWeek => {
+                return plan_err!(
+                    "Unsupported date part 'DAYOFWEEK' for BigQuery date_trunc"
+                )
+            }
+            F::DayOfYear => {
+                return plan_err!(
+                    "Unsupported date part 'DAYOFYEAR' for BigQuery date_trunc"
+                )
+            }
+            other => {
+                return plan_err!(
+                    "Unsupported date part '{other:?}' for BigQuery date_trunc"
+                )
+            }
+        })
+    }
+
+    // Heuristic: expression is explicitly cast to DATE
+    fn is_cast_to_date(&self, expr: &Expr) -> bool {
+        use datafusion::arrow::datatypes::DataType as ArrowDataType;
+        use datafusion::logical_expr::{Cast, TryCast};
+        match expr {
+            Expr::Cast(Cast { data_type, .. }) | Expr::TryCast(TryCast { data_type, .. }) => {
+                matches!(data_type, ArrowDataType::Date32 | ArrowDataType::Date64)
+            }
+            _ => false,
+        }
+    }
+
+    // Heuristic: expression is explicitly cast to TIMESTAMP
+    fn is_timestampish(&self, expr: &Expr) -> bool {
+        use datafusion::arrow::datatypes::DataType as ArrowDataType;
+        use datafusion::logical_expr::{Cast, TryCast};
+        match expr {
+            Expr::Cast(Cast { data_type, .. }) | Expr::TryCast(TryCast { data_type, .. }) => {
+                matches!(data_type, ArrowDataType::Timestamp(_, _))
+            }
+            _ => false,
         }
     }
 }
