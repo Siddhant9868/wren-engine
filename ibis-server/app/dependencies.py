@@ -1,3 +1,4 @@
+import wren_core
 from fastapi import Request
 from starlette.datastructures import Headers
 
@@ -12,6 +13,7 @@ X_CACHE_HIT = "X-Cache-Hit"
 X_CACHE_CREATE_AT = "X-Cache-Create-At"
 X_CACHE_OVERRIDE = "X-Cache-Override"
 X_CACHE_OVERRIDE_AT = "X-Cache-Override-At"
+X_CORRELATION_ID = "X-Correlation-ID"
 
 
 # Validate the dto by building the specific connection info from the data source
@@ -48,9 +50,8 @@ def _filter_headers(header_string: str) -> bool:
     return False
 
 
-def exist_wren_variables_header(
-    headers: Headers,
-) -> bool:
-    if headers is None:
+def is_backward_compatible(manifest_str: str) -> bool:
+    try:
+        return wren_core.is_backward_compatible(manifest_str)
+    except Exception:
         return False
-    return any(key.startswith(X_WREN_VARIABLE_PREFIX) for key in headers.keys())

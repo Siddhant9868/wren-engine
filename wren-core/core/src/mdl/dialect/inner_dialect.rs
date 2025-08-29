@@ -91,7 +91,7 @@ impl InnerDialect for MySQLDialect {
         args: &[Expr],
     ) -> Result<Option<ast::Expr>> {
         match function_name {
-            "btrim" => scalar_function_to_sql_internal(unparser, "trim", args),
+            "btrim" => scalar_function_to_sql_internal(unparser, None, "trim", args),
             _ => Ok(None),
         }
     }
@@ -147,61 +147,8 @@ impl InnerDialect for BigQueryDialect {
                     expr: Box::new(unparser.expr_to_sql(&args[1])?),
                 }))
             }
-            // Add BigQuery-specific rewrite for date_trunc('unit', expr)
-            "date_trunc" => {
-                if args.len() != 2 {
-                    return plan_err!(
-                        "date_trunc requires exactly 2 arguments, found {}",
-                        args.len()
-                    );
-                }
-                // Normalize and validate the unit
-                let field = self.datetime_field_from_expr(&args[0])?;
-                let part_expr = self.datetime_field_to_expr(&field)?;
-
-                // Unparse the value expression (second arg)
-                let value_expr = unparser.expr_to_sql(&args[1])?;
-
-                // Decide target function name. Default to TIMESTAMP_TRUNC.
-                // We only select DATE_TRUNC when the expression is explicitly cast to DATE.
-                let func_name = if self.is_cast_to_date(&args[1]) {
-                    "DATE_TRUNC"
-                } else {
-                    "TIMESTAMP_TRUNC"
-                };
-
-                // Ensure correct input type for TIMESTAMP_TRUNC: cast to TIMESTAMP if not obviously timestamp.
-                let value_expr_for_fn = if func_name == "TIMESTAMP_TRUNC" && !self.is_timestampish(&args[1]) {
-                    ast::Expr::Cast {
-                        kind: ast::CastKind::Cast,
-                        expr: Box::new(value_expr),
-                        data_type: ast::DataType::Timestamp(None, ast::TimezoneInfo::None),
-                        format: None,
-                    }
-                } else {
-                    value_expr
-                };
-
-                let func = ast::Expr::Function(ast::Function {
-                    name: ast::ObjectName(vec![Ident::new(func_name)]),
-                    args: ast::FunctionArguments::List(ast::FunctionArgumentList {
-                        duplicate_treatment: None,
-                        args: vec![
-                            ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(
-                                value_expr_for_fn,
-                            )),
-                            ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(part_expr)),
-                        ],
-                        clauses: vec![],
-                    }),
-                    filter: None,
-                    null_treatment: None,
-                    over: None,
-                    within_group: vec![],
-                    parameters: ast::FunctionArguments::None,
-                    uses_odbc_syntax: false,
-                });
-                Ok(Some(func))
+            "now" => {
+                scalar_function_to_sql_internal(unparser, None, "CURRENT_TIMESTAMP", args)
             }
             _ => Ok(None),
         }
@@ -238,8 +185,8 @@ impl InnerDialect for BigQueryDialect {
 impl BigQueryDialect {
     fn datetime_field_from_expr(&self, expr: &Expr) -> Result<ast::DateTimeField> {
         match expr {
-            Expr::Literal(ScalarValue::Utf8(Some(s)))
-            | Expr::Literal(ScalarValue::LargeUtf8(Some(s))) => {
+            Expr::Literal(ScalarValue::Utf8(Some(s)), _)
+            | Expr::Literal(ScalarValue::LargeUtf8(Some(s)), _) => {
                 Ok(self.datetime_field_from_str(s)?)
             }
             _ => plan_err!(

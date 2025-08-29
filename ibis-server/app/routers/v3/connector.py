@@ -14,8 +14,8 @@ from app.dependencies import (
     X_CACHE_OVERRIDE,
     X_CACHE_OVERRIDE_AT,
     X_WREN_FALLBACK_DISABLE,
-    exist_wren_variables_header,
     get_wren_headers,
+    is_backward_compatible,
     verify_query_dto,
 )
 from app.mdl.core import get_session_context
@@ -23,7 +23,6 @@ from app.mdl.java_engine import JavaEngineConnector
 from app.mdl.rewriter import Rewriter
 from app.mdl.substitute import ModelSubstitute
 from app.model import (
-    DatabaseTimeoutError,
     DryPlanDTO,
     QueryDTO,
     TranspileDTO,
@@ -31,6 +30,7 @@ from app.model import (
 )
 from app.model.connector import Connector
 from app.model.data_source import DataSource
+from app.model.error import DatabaseTimeoutError
 from app.model.validator import Validator
 from app.query_cache import QueryCacheManager
 from app.routers import v2
@@ -191,7 +191,7 @@ async def query(
             if (
                 java_engine_connector.client is None
                 or is_fallback_disable
-                or exist_wren_variables_header(headers)
+                or not is_backward_compatible(dto.manifest_str)
             ):
                 raise e
 
@@ -199,18 +199,25 @@ async def query(
                 "Failed to execute v3 query, try to fallback to v2: {}\n", str(e)
             )
             headers = append_fallback_context(headers, span)
-            return await v2.connector.query(
-                data_source=data_source,
-                dto=dto,
-                dry_run=dry_run,
-                cache_enable=cache_enable,
-                override_cache=override_cache,
-                limit=limit,
-                java_engine_connector=java_engine_connector,
-                query_cache_manager=query_cache_manager,
-                headers=headers,
-                is_fallback=True,
-            )
+            try:
+                return await v2.connector.query(
+                    data_source=data_source,
+                    dto=dto,
+                    dry_run=dry_run,
+                    limit=limit,
+                    java_engine_connector=java_engine_connector,
+                    headers=headers,
+                    is_fallback=True,
+                    cache_enable=cache_enable,
+                    override_cache=override_cache,
+                    query_cache_manager=query_cache_manager,
+                )
+            except Exception as ve:
+                # ignore v2 error messages in fallback, return v3 error instead.
+                logger.debug(
+                    "v2 fallback failed for v3 query; suppressing v2 error: %s", ve
+                )
+                raise e from None
 
 
 @router.post("/dry-plan", description="get the planned WrenSQL")
@@ -237,7 +244,7 @@ async def dry_plan(
             if (
                 java_engine_connector.client is None
                 or is_fallback_disable
-                or exist_wren_variables_header(headers)
+                or not is_backward_compatible(dto.manifest_str)
             ):
                 raise e
 
@@ -245,12 +252,19 @@ async def dry_plan(
                 "Failed to execute v3 dry-plan, try to fallback to v2: {}", str(e)
             )
             headers = append_fallback_context(headers, span)
-            return await v2.connector.dry_plan(
-                dto=dto,
-                java_engine_connector=java_engine_connector,
-                headers=headers,
-                is_fallback=True,
-            )
+            try:
+                return await v2.connector.dry_plan(
+                    dto=dto,
+                    java_engine_connector=java_engine_connector,
+                    headers=headers,
+                    is_fallback=True,
+                )
+            except Exception as ve:
+                # ignore v2 error messages in fallback, return v3 error instead.
+                logger.debug(
+                    "v2 fallback failed for v3 dry-plan; suppressing v2 error: %s", ve
+                )
+                raise e from None
 
 
 @router.post(
@@ -285,7 +299,7 @@ async def dry_plan_for_data_source(
             if (
                 java_engine_connector.client is None
                 or is_fallback_disable
-                or exist_wren_variables_header(headers)
+                or not is_backward_compatible(dto.manifest_str)
             ):
                 raise e
 
@@ -294,13 +308,20 @@ async def dry_plan_for_data_source(
                 str(e),
             )
             headers = append_fallback_context(headers, span)
-            return await v2.connector.dry_plan_for_data_source(
-                data_source=data_source,
-                dto=dto,
-                java_engine_connector=java_engine_connector,
-                headers=headers,
-                is_fallback=True,
-            )
+            try:
+                return await v2.connector.dry_plan_for_data_source(
+                    data_source=data_source,
+                    dto=dto,
+                    java_engine_connector=java_engine_connector,
+                    headers=headers,
+                    is_fallback=True,
+                )
+            except Exception as ve:
+                # ignore v2 error messages in fallback, return v3 error instead.
+                logger.debug(
+                    "v2 fallback failed for v3 dry-plan; suppressing v2 error: %s", ve
+                )
+                raise e from None
 
 
 @router.post(
@@ -351,7 +372,7 @@ async def validate(
             if (
                 java_engine_connector.client is None
                 or is_fallback_disable
-                or exist_wren_variables_header(headers)
+                or not is_backward_compatible(dto.manifest_str)
             ):
                 raise e
 
@@ -360,14 +381,21 @@ async def validate(
                 str(e),
             )
             headers = append_fallback_context(headers, span)
-            return await v2.connector.validate(
-                data_source=data_source,
-                rule_name=rule_name,
-                dto=dto,
-                java_engine_connector=java_engine_connector,
-                headers=headers,
-                is_fallback=True,
-            )
+            try:
+                return await v2.connector.validate(
+                    data_source=data_source,
+                    rule_name=rule_name,
+                    dto=dto,
+                    java_engine_connector=java_engine_connector,
+                    headers=headers,
+                    is_fallback=True,
+                )
+            except Exception as ve:
+                # ignore v2 error messages in fallback, return v3 error instead.
+                logger.debug(
+                    "v2 fallback failed for v3 validate; suppressing v2 error: %s", ve
+                )
+                raise e from None
 
 
 @router.get(
@@ -446,7 +474,7 @@ async def model_substitute(
             if (
                 java_engine_connector.client is None
                 or is_fallback_disable
-                or exist_wren_variables_header(headers)
+                or not is_backward_compatible(dto.manifest_str)
             ):
                 raise e
 
@@ -455,10 +483,18 @@ async def model_substitute(
                 str(e),
             )
             headers = append_fallback_context(headers, span)
-            return await v2.connector.model_substitute(
-                data_source=data_source,
-                dto=dto,
-                headers=headers,
-                java_engine_connector=java_engine_connector,
-                is_fallback=True,
-            )
+            try:
+                return await v2.connector.model_substitute(
+                    data_source=data_source,
+                    dto=dto,
+                    headers=headers,
+                    java_engine_connector=java_engine_connector,
+                    is_fallback=True,
+                )
+            except Exception as ve:
+                # ignore v2 error messages in fallback, return v3 error instead.
+                logger.debug(
+                    "v2 fallback failed for v3 model-substitute; suppressing v2 error: %s",
+                    ve,
+                )
+                raise e from None
