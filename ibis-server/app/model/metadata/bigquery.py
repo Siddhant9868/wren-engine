@@ -136,6 +136,8 @@ class BigQueryMetadata(Metadata):
                     continue
                 parent_nested_column = find_parent_column(column_metadata, root_column)
                 if parent_nested_column:
+                    if parent_nested_column.nestedColumns is None:
+                        parent_nested_column.nestedColumns = []
                     parent_nested_column.nestedColumns.append(
                         get_column(column_metadata)
                     )
