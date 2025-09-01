@@ -104,6 +104,18 @@ impl InnerDialect for BigQueryDialect {
         true
     }
 
+    fn identifier_quote_style(&self, identifier: &str) -> Option<char> {
+        // BigQuery uses backticks for identifiers that need quoting
+        let identifier_regex = Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap();
+        if ALL_KEYWORDS.contains(&identifier.to_uppercase().as_str())
+            || !identifier_regex.is_match(identifier)
+        {
+            Some('`')
+        } else {
+            None
+        }
+    }
+
     fn col_alias_overrides(&self, alias: &str) -> Result<Option<String>> {
         // Check if alias contains any special characters not supported by BigQuery col names
         // https://cloud.google.com/bigquery/docs/schemas#flexible-column-names

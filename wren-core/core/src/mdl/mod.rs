@@ -429,11 +429,34 @@ pub async fn transform_sql_with_ctx(
             let replaced = sql
                 .to_string()
                 .replace(analyzed_mdl.wren_mdl().catalog_schema_prefix(), "");
-            info!("wren-core planned SQL: {replaced}");
-            Ok(replaced)
+            
+            // BigQuery-specific post-processing: convert double-quoted table references to backticks
+            let final_sql = if matches!(data_source, DataSource::BigQuery) {
+                convert_bigquery_table_references(&replaced)
+            } else {
+                replaced
+            };
+            
+            info!("wren-core planned SQL: {final_sql}");
+            Ok(final_sql)
         }
         Err(e) => Err(e),
     }
+}
+
+/// Convert BigQuery table references from "schema"."table" format to `schema.table` format
+fn convert_bigquery_table_references(sql: &str) -> String {
+    use regex::Regex;
+    
+    // Pattern to match "project"."dataset"."table" and replace with `project.dataset.table`
+    let three_part_pattern = Regex::new(r#""([^"]+)"\."([^"]+)"\."([^"]+)""#).unwrap();
+    let sql = three_part_pattern.replace_all(sql, "`$1.$2.$3`");
+    
+    // Pattern to match "schema"."table" and replace with `schema.table`
+    let two_part_pattern = Regex::new(r#""([^"]+)"\."([^"]+)""#).unwrap();
+    let sql = two_part_pattern.replace_all(&sql, "`$1.$2`");
+    
+    sql.to_string()
 }
 
 /// Try to check if the fail reason is a permission denied error.
