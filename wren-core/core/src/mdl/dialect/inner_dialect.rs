@@ -105,11 +105,9 @@ impl InnerDialect for BigQueryDialect {
     }
 
     fn identifier_quote_style(&self, identifier: &str) -> Option<char> {
-        // BigQuery uses backticks for identifiers that need quoting
-        let identifier_regex = Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap();
-        if ALL_KEYWORDS.contains(&identifier.to_uppercase().as_str())
-            || !identifier_regex.is_match(identifier)
-        {
+        // BigQuery uses backticks for keywords only
+        // Table references are handled by post-processing to avoid mixed quoting issues
+        if ALL_KEYWORDS.contains(&identifier.to_uppercase().as_str()) {
             Some('`')
         } else {
             None

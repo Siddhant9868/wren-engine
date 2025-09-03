@@ -445,18 +445,144 @@ pub async fn transform_sql_with_ctx(
 }
 
 /// Convert BigQuery table references from "schema"."table" format to `schema.table` format
+/// with proper alias handling to avoid mixed quoting issues
 fn convert_bigquery_table_references(sql: &str) -> String {
-    use regex::Regex;
+    BigQueryTableProcessor::new(sql).process()
+}
+
+#[derive(Debug, Clone)]
+struct TableMapping {
+    schema: String,
+    table: String,
+    original_quoted: String,  // "schema"."table"
+    backtick_format: String,  // `schema.table`
+    alias: String,            // alias_schema_table or existing alias
+    has_existing_alias: bool,
+}
+
+struct BigQueryTableProcessor {
+    sql: String,
+    table_mappings: Vec<TableMapping>,
+}
+
+impl BigQueryTableProcessor {
+    fn new(sql: &str) -> Self {
+        Self {
+            sql: sql.to_string(),
+            table_mappings: Vec::new(),
+        }
+    }
     
-    // Pattern to match "project"."dataset"."table" and replace with `project.dataset.table`
-    let three_part_pattern = Regex::new(r#""([^"]+)"\."([^"]+)"\."([^"]+)""#).unwrap();
-    let sql = three_part_pattern.replace_all(sql, "`$1.$2.$3`");
+    fn process(mut self) -> String {
+        // Step 1: Extract all table mappings from FROM/JOIN clauses (including CTEs and subqueries)
+        self.extract_table_mappings();
+        
+        // Step 2: Replace FROM/JOIN references with backticks and aliases
+        self.replace_from_join_references();
+        
+        // Step 3: Replace all column references with aliases
+        self.replace_column_references();
+        
+        self.sql
+    }
     
-    // Pattern to match "schema"."table" and replace with `schema.table`
-    let two_part_pattern = Regex::new(r#""([^"]+)"\."([^"]+)""#).unwrap();
-    let sql = two_part_pattern.replace_all(&sql, "`$1.$2`");
+    fn extract_table_mappings(&mut self) {
+        use regex::Regex;
+        
+        // Pattern to match table references in FROM/JOIN clauses
+        // Handles: FROM "schema"."table" [AS alias]
+        //         JOIN "schema"."table" [AS alias]
+        //         WITH cte AS (SELECT ... FROM "schema"."table" [AS alias])
+        let from_join_pattern = Regex::new(
+            r#"(?i)(FROM|JOIN|,)\s+"([^"]+)"\."([^"]+)"(?:\s+AS\s+([a-zA-Z_][a-zA-Z0-9_]*)|(\s+([a-zA-Z_][a-zA-Z0-9_]*)))?(?=\s|$|,|\)|;|WHERE|GROUP|ORDER|HAVING|LIMIT|UNION|EXCEPT|INTERSECT|ON)"#
+        ).unwrap();
+        
+        for captures in from_join_pattern.captures_iter(&self.sql) {
+            let schema = captures.get(2).unwrap().as_str();
+            let table = captures.get(3).unwrap().as_str();
+            let existing_alias = captures.get(4)
+                .or_else(|| captures.get(6))
+                .map(|m| m.as_str());
+            
+            let original_quoted = format!(r#""{}"."{}""#, schema, table);
+            let backtick_format = format!("`{}.{}`", schema, table);
+            
+            let (alias, has_existing_alias) = if let Some(existing_alias) = existing_alias {
+                (existing_alias.to_string(), true)
+            } else {
+                (format!("alias_{}_{}", schema, table), false)
+            };
+            
+            // Avoid duplicates
+            if !self.table_mappings.iter().any(|m| m.original_quoted == original_quoted) {
+                self.table_mappings.push(TableMapping {
+                    schema: schema.to_string(),
+                    table: table.to_string(),
+                    original_quoted,
+                    backtick_format,
+                    alias,
+                    has_existing_alias,
+                });
+            }
+        }
+    }
     
-    sql.to_string()
+    fn replace_from_join_references(&mut self) {
+        use regex::Regex;
+        
+        for mapping in &self.table_mappings {
+            // Create pattern to match the exact table reference in FROM/JOIN context
+            let pattern_str = format!(
+                r#"(?i)(FROM|JOIN|,)(\s+)"{}"\."{}"(?:(\s+AS\s+[a-zA-Z_][a-zA-Z0-9_]*)|(\s+[a-zA-Z_][a-zA-Z0-9_]*))?(?=\s|$|,|\)|;|WHERE|GROUP|ORDER|HAVING|LIMIT|UNION|EXCEPT|INTERSECT|ON)"#,
+                regex::escape(&mapping.schema),
+                regex::escape(&mapping.table)
+            );
+            
+            let pattern = Regex::new(&pattern_str).unwrap();
+            
+            let replacement = if mapping.has_existing_alias {
+                // Keep existing alias
+                format!("$1$2{} AS {}", mapping.backtick_format, mapping.alias)
+            } else {
+                // Add new alias
+                format!("$1$2{} AS {}", mapping.backtick_format, mapping.alias)
+            };
+            
+            self.sql = pattern.replace_all(&self.sql, replacement.as_str()).to_string();
+        }
+    }
+    
+    fn replace_column_references(&mut self) {
+        use regex::Regex;
+        
+        for mapping in &self.table_mappings {
+            // Replace column references: "schema"."table".column -> alias.column
+            let quoted_pattern_str = format!(
+                r#""{}"\."{}"\."#,
+                regex::escape(&mapping.schema),
+                regex::escape(&mapping.table)
+            );
+            let quoted_pattern = Regex::new(&quoted_pattern_str).unwrap();
+            self.sql = quoted_pattern.replace_all(&self.sql, &format!("{}.", mapping.alias)).to_string();
+            
+            // Also handle underscore format that might exist: "schema_table".column -> alias.column
+            let underscore_name = format!("{}_{}",
+                mapping.schema.replace(".", "_"),
+                mapping.table.replace(".", "_")
+            );
+            let underscore_pattern = Regex::new(&format!(r#""{}"\."#, regex::escape(&underscore_name))).unwrap();
+            self.sql = underscore_pattern.replace_all(&self.sql, &format!("{}.", mapping.alias)).to_string();
+            
+            // Handle direct column references without quotes: schema_table.column -> alias.column
+            let direct_pattern = Regex::new(&format!(r"\b{}\.", regex::escape(&underscore_name))).unwrap();
+            self.sql = direct_pattern.replace_all(&self.sql, &format!("{}.", mapping.alias)).to_string();
+        }
+        
+        // Clean up any remaining double-quoted simple identifiers that are not table.column patterns
+        // Convert remaining "identifier" to identifier for columns, but preserve complex identifiers
+        let simple_identifier_pattern = Regex::new(r#""([a-zA-Z_][a-zA-Z0-9_]*)""#).unwrap();
+        self.sql = simple_identifier_pattern.replace_all(&self.sql, "$1").to_string();
+    }
 }
 
 /// Try to check if the fail reason is a permission denied error.
